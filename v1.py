@@ -49,10 +49,23 @@ def get_batch(split):
 
 
 xb, yb = get_batch('train')
+class Head(nn.Module):
 
-import torch
-import torch.nn as nn
-from torch.nn import functional as F
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+        self.dropout = nn.Dropout(dropout)
+        self.head_size = head_size
+    def forward(self, x):
+        B, T, C = x.shape
+        wei = (self.key(x) @ self.query(x).T) * self.head_size**0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei)
+        wei = self.dropout(wei)
+        return wei @ self.value(x) 
 
 class BigramLanguageModel(nn.Module):
   def __init__(self, vocab_size):
@@ -79,7 +92,7 @@ class BigramLanguageModel(nn.Module):
       idx_next = torch.multinomial(probs, num_samples=1) # (B, 1) get max index
       idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
     return idx
-
+    
 m = BigramLanguageModel(vocab_size)
 logits, loss = m(xb, yb)
 
