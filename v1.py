@@ -3,22 +3,22 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+batch_size = 64 # how many independent sequences will we process in parallel?
+block_size = 256 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 500
-learning_rate = 1e-3
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 32
-n_head = 4
-n_layer = 1
+n_embd = 384
+n_head = 6
+n_layer = 6
 dropout = 0.2
 # ------------
 
 torch.manual_seed(1337)
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
@@ -62,32 +62,22 @@ def estimate_loss():
     return out
 
 class Head(nn.Module):
-    """ one head of self-attention """
-
     def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
+        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
         self.dropout = nn.Dropout(dropout)
-
+        self.head_size = head_size
     def forward(self, x):
-        # input of size (batch, time-step, channels)
-        # output of size (batch, time-step, head size)
-        B,T,C = x.shape
-        k = self.key(x)   # (B,T,hs)
-        q = self.query(x) # (B,T,hs)
-        # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        B, T, C = x.shape
+        k, q = self.key(x), self.query(x).transpose(-2,-1)
+        wei = (k @ q) * self.head_size**-0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
-        # perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,hs)
-        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
-        return out
+        return wei @ self.value(x) 
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size) -> None:
@@ -99,13 +89,71 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
         return self.dropout(self.proj(out))
+class MultiHeadAttention2(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+
+        self.hidden_dim = n_embd # 임베딩 차원
+        self.n_heads = num_heads # 헤드(head)의 개수: 서로 다른 어텐션(attention) 컨셉의 수
+        self.head_dim = n_embd // num_heads # 각 헤드(head)에서의 임베딩 차원
+
+        self.fc_q = nn.Linear(n_embd, n_embd) # Query 값에 적용될 FC 레이어
+        self.fc_k = nn.Linear(n_embd, n_embd) # Key 값에 적용될 FC 레이어
+        self.fc_v = nn.Linear(n_embd, n_embd) # Value 값에 적용될 FC 레이어
+
+        self.fc_o = nn.Linear(n_embd, n_embd)
+
+        self.dropout = nn.Dropout(dropout)
+
+        self.scale = torch.sqrt(torch.FloatTensor([self.head_dim])).to(device)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+    def forward(self, x):
+
+        batch_size, T, C = x.shape
+ 
+        Q = self.fc_q(x)
+        K = self.fc_k(x)
+        V = self.fc_v(x)
+
+        Q = Q.view(batch_size, -1, self.n_heads, self.head_dim).permute(0, 2, 1, 3)
+        K = K.view(batch_size, -1, self.n_heads, self.head_dim).permute(0, 2, 1, 3)
+        V = V.view(batch_size, -1, self.n_heads, self.head_dim).permute(0, 2, 1, 3)
+
+        energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) / self.scale
+
+        energy = energy.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+
+        attention = torch.softmax(energy, dim=-1)
+        x = torch.matmul(self.dropout(attention), V)
+
+        x = x.permute(0, 2, 1, 3).contiguous()
+        x = x.view(batch_size, -1, self.hidden_dim)
+
+        x = self.dropout(self.fc_o(x))
+        return x
+
+# class Block(nn.Module):
+#     def __init__(self, n_embd, n_head):
+#         super().__init__()
+#         head_size = n_embd // n_head
+#         self.sa = MultiHeadAttention2(n_head, head_size)
+#         self.ffd = FeedForward(n_embd)
+#         self.ln1 = nn.LayerNorm(n_embd)
+#         self.ln2 = nn.LayerNorm(n_embd)
+
+#     def forward(self, x):
+#       x = x + self.sa(self.ln1(x))
+#       x = x + self.ffd(self.ln2(x))
+#       return x
 
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
-            nn.ReLU()
+            nn.Linear(n_embd, n_embd*4),
+            nn.ReLU(),
+            nn.Linear(n_embd*4, n_embd),
+            nn.Dropout(dropout),
         )
     def forward(self, x):
         return self.net(x)
@@ -116,10 +164,13 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
         self.ffd =  FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
-      out = self.sa(x)
-      return self.ffd(out)
+      x = x + self.sa(self.ln1(x))
+      x = x + self.ffd(self.ln2(x))
+      return x
 
 class GPTLanguageModel(nn.Module):
     def __init__(self):
@@ -184,7 +235,7 @@ model = GPTLanguageModel()
 m = model.to(device)
 
 # create a PyTorch optimizer
-optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
+optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
 
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
