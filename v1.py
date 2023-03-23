@@ -3,16 +3,16 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 64 # how many independent sequences will we process in parallel?
-block_size = 256 # what is the maximum context length for predictions?
+batch_size = 32 # how many independent sequences will we process in parallel?
+block_size = 8 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 500
-learning_rate = 3e-4
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 384
-n_head = 6
-n_layer = 6
+n_embd = 32
+n_head = 4
+n_layer = 1
 dropout = 0.2
 # ------------
 
@@ -47,10 +47,21 @@ def get_batch(split):
     x, y = x.to(device), y.to(device)
     return x, y
 
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
 
-xb, yb = get_batch('train')
 class Head(nn.Module):
-
     def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
@@ -61,9 +72,10 @@ class Head(nn.Module):
         self.head_size = head_size
     def forward(self, x):
         B, T, C = x.shape
-        wei = (self.key(x) @ self.query(x).T) * self.head_size**0.5
+        k, q = self.key(x), self.query(x).transpose(-2,-1)
+        wei = (k @ q) * self.head_size**0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-        wei = F.softmax(wei)
+        wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
         return wei @ self.value(x) 
 
@@ -77,21 +89,28 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
         return self.dropout(self.proj(out))
-        
+
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
-        self.linear1 = nn.Linear(n_embd, n_embd)
-        self.relu = nn.ReLU()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, n_embd),
+            nn.ReLU()
+        )
     def forward(self, x):
-        out = self.linear1(x)
-        return self.relu(x)
+        return self.net(x)
 
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = Mu
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffd =  FeedForward(n_embd)
+
+    def forward(self, x):
+      out = self.sa(x)
+      return self.ffd(out)
+
 class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -151,23 +170,33 @@ class GPTLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
-m = GPTLanguageModel(vocab_size)
-logits, loss = m(xb, yb)
+model = GPTLanguageModel()
+m = model.to(device)
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
 
-batch_size = 32
-for steps in range(10000): # increase number of steps for good results... 
-    
+print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+
+# create a PyTorch optimizer
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+for iter in range(max_iters):
+
+    # every once in a while evaluate the loss on train and val sets
+    if iter % eval_interval == 0 or iter == max_iters - 1:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
     # sample a batch of data
     xb, yb = get_batch('train')
 
     # evaluate the loss
-    logits, loss = m(xb, yb)
+    logits, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
 
-print(loss.item())
-print(decode(m.generate(idx = torch.ones((1,1), dtype=torch.long), max_new_tokens=500)[0].tolist()))
+# generate from the model
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
