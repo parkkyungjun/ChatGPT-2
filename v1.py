@@ -78,6 +78,15 @@ class MultiHeadAttention(nn.Module):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
         return self.dropout(self.proj(out))
         
+class FeedForward(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        self.linear1 = nn.Linear(n_embd, n_embd)
+        self.relu = nn.ReLU()
+    def forward(self, x):
+        out = self.linear1(x)
+        return self.relu(x)
+
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
