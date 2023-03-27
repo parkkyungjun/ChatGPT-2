@@ -1,8 +1,9 @@
+import random
+import operator
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-# hyperparameters
 batch_size = 64 # how many independent sequences will we process in parallel?
 block_size = 256 # what is the maximum context length for predictions?
 max_iters = 5000
@@ -10,40 +11,68 @@ eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embd = 384
-n_head = 6
-n_layer = 6
+n_embd = 32
+n_head = 4
+n_layer = 1
 dropout = 0.2
-# ------------
 
-torch.manual_seed(1337)
+def generate_arithmetic_dataset(num_samples):
+    operations = {
+        '+': operator.add,
+        '-': operator.sub,
+        '*': operator.mul,
+        '/': operator.truediv
+    }
+    
+    data = []
+    for _ in range(num_samples):
+        num1 = random.randint(1, 100)
+        num2 = random.randint(1, 100)
+        op = random.choice(list(operations.keys()))
+        
+        # 나눗셈은 정수 결과를 가지도록 조정
+        if op == '/':
+            num1 *= num2
+        
+        question = f"{num1} {op} {num2}  "
+        answer = operations[op](num1, num2)
+        
+        data.append([question, str(answer)+'  '])
+    
+    return data
 
-# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-with open('input.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
+num_samples = 10000
+dataset = generate_arithmetic_dataset(num_samples)
 
-# here are all the unique characters that occur in this text
-chars = sorted(list(set(text)))
+# 데이터셋을 훈련 및 검증 데이터로 분할
+train_ratio = 0.8
+split_idx = int(num_samples * train_ratio)
+train_data = dataset[:split_idx]
+val_data = dataset[split_idx:]
+
+print("Training data:", train_data[:5])
+print("Validation data:", val_data[:5])
+
+chars = sorted([str(i) for i in range(10)] + [' ', '+', '-', '*', '/', '[sep]', '[cls]', '.'])
+
 vocab_size = len(chars)
-# create a mapping from characters to integers
+
 stoi = { ch:i for i,ch in enumerate(chars) }
 itos = { i:ch for i,ch in enumerate(chars) }
 encode = lambda s: [stoi[c] for c in s] # encoder: take a string, output a list of integers
 decode = lambda l: ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
 
-# Train and test splits
-data = torch.tensor(encode(text), dtype=torch.long)
-n = int(0.9*len(data)) # first 90% will be train, rest val
-train_data = data[:n]
-val_data = data[n:]
+train_data = [[[17]+encode(i[0][:7])+[18], encode(i[1][:4])] for i in train_data]
+val_data = [[[17]+encode(i[0][:7])+[18], encode(i[1][:4])] for i in val_data]
 
-# data loading
+torch.manual_seed(1337)
+
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
     data = train_data if split == 'train' else val_data
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    ix = torch.randint(len(data), (batch_size,))
+    x = torch.stack([torch.tensor(data[i][0], dtype=torch.long) for i in ix])
+    y = torch.stack([torch.tensor(data[i][1],dtype=torch.long) for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
 
@@ -89,8 +118,6 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
         return self.dropout(self.proj(out))
-<<<<<<< HEAD
-=======
 class MultiHeadAttention2(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
@@ -159,21 +186,12 @@ class FeedForward(nn.Module):
         )
     def forward(self, x):
         return self.net(x)
->>>>>>> origin/main
 
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
-<<<<<<< HEAD
-        self.ln = nn.LayerNorm(n_embd)
-
-    def forward(self, x):
-        x = x + self.self.sa(self.ln(x))
-        
-        return x
-=======
         self.ffd =  FeedForward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -183,7 +201,6 @@ class Block(nn.Module):
       x = x + self.ffd(self.ln2(x))
       return x
 
->>>>>>> origin/main
 class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -272,5 +289,5 @@ for iter in range(max_iters):
     optimizer.step()
 
 # generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+# context = torch.zeros((1, 1), dtype=torch.long, device=device)
+# print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
