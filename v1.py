@@ -77,12 +77,18 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         out = torch.cat([head(x) for head in self.heads], dim=-1)
         return self.dropout(self.proj(out))
-        
+
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = Mu
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ln = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.self.sa(self.ln(x))
+        
+        return x
 class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
